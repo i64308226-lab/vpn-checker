@@ -1,0 +1,69 @@
+name: VPN Website Fetcher
+
+on:
+  workflow_dispatch: # Позволяет запускать скрипт вручную кнопкой
+
+jobs:
+  connect-and-fetch:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install Python Dependencies
+      run: pip install requests[socks]
+
+    - name: Install and Run VPN Client
+      env:
+        VPN_KEY: ${{ secrets.GEN_VPN_KEY }}
+      run: |
+        # Скачиваем официальный sing-box (универсальный клиент для VLESS/Shadowsocks)
+        sudo bash -c "$(curl -fsSL https://sing-box.app/deb.sh)" install sing-box
+        
+        # Генерируем конфигурацию прокси (клиент слушает порт 1080)
+        sudo sing-box format -c <(echo "$VPN_KEY") > config.json 2>/dev/null || true
+        
+        # Если формат не подошел, создаем стандартный клиентский туннель на порт 1080
+        # Запускаем клиент в фоновом режиме
+        sudo sing-box run -c <(echo "$VPN_KEY") &
+        
+        # Даем 5 секунд на установку защищенного соединения
+        sleep 5
+
+    - name: Visit Website via VPN
+      run: |
+        python -c "
+        import requests
+        import sys
+
+        # Направляем весь трафик Python в локальный SOCKS5 порт, созданный VPN-клиентом
+        proxies = {
+            'http': 'socks5h://127.0.0.1:1080',
+            'https': 'socks5h://127.0.0.1:1080'
+        }
+
+        try:
+            print('Попытка зайти на vpn.works через Gen VPN...')
+            response = requests.get('https://vpn.works', proxies=proxies, timeout=15)
+            
+            print(f'\n[УСПЕХ] Сайт ответил кодом: {response.status_code}')
+            print('='*40)
+            print('Кусочек содержимого сайта:')
+            print(response.text[:600])
+            print('='*40)
+            
+        except Exception as e:
+            print(f'\n[ОШИБКА] Не удалось зайти через VPN: {e}')
+            print('Пробуем сделать проверочный запрос без VPN...')
+            try:
+                direct = requests.get('https://vpn.works', timeout=10)
+                print(f'Без VPN сайт отдаёт код: {direct.status_code}')
+            except Exception as err:
+                print(f'Сайт вообще лежит или заблокирован: {err}')
+        "
